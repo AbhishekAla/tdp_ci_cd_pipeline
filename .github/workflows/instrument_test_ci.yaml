@@ -1,0 +1,73 @@
+name: Instrument test CI
+
+on:
+  push:
+    branches: 
+      - main
+    paths:
+      - "src/instrument_module.py"
+      - "tests/test_instrument_module.py"
+      - "requirements.txt"
+      - ".github/workflows/instrument_test_ci.yaml"
+  pull_request:
+    branches:
+      - dev
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    env:
+      PY: py${{ matrix.python-version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+            setup.cfg
+            setup.py
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-cov
+
+      - name: Run tests (pytest) with reports
+        run: |
+          mkdir -p test-results
+          pytest -q \
+            --maxfail=1 \
+            --disable-warnings \
+            --junitxml=test-results/junit-${{ env.PY }}.xml \
+            --cov=src \
+            --cov-report=xml:coverage-${{ env.PY }}.xml \
+            --cov-report=term
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ env.PY }}
+          path: |
+            test-results/junit-${{ env.PY }}.xml
+            coverage-${{ env.PY }}.xml
+          retention-days: 7
+
