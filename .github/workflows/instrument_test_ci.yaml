@@ -1,73 +1,69 @@
-name: Instrument test CI
-
+name: CI - Script-specific Tests
+ 
 on:
   push:
-    branches: 
-      - main
-    paths:
-      - "src/instrument_module.py"
-      - "tests/test_instrument_module.py"
-      - "requirements.txt"
-      - ".github/workflows/instrument_test_ci.yaml"
+    branches:
+      - DEV
   pull_request:
     branches:
-      - dev
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+      - DEV
+ 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
-    env:
-      PY: py${{ matrix.python-version }}
-
+ 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
+ 
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            pyproject.toml
-            setup.cfg
-            setup.py
-
+          python-version: "3.11"
+ 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest pytest-cov
-
-      - name: Run tests (pytest) with reports
+          pip install pytest pytest-html
+ 
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v45
+ 
+      - name: Run relevant unit tests and generate HTML report
         run: |
-          mkdir -p test-results
-          pytest -q \
-            --maxfail=1 \
-            --disable-warnings \
-            --junitxml=test-results/junit-${{ env.PY }}.xml \
-            --cov=src \
-            --cov-report=xml:coverage-${{ env.PY }}.xml \
-            --cov-report=term
-
-      - name: Upload test reports
+          tests_to_run=()
+ 
+          echo "Changed files:"
+          while IFS= read -r file; do
+            file_unescaped=$(echo "$file" | sed 's/\\//g')
+            echo "  $file_unescaped"
+ 
+            if [[ "$file_unescaped" =~ ^Implementation\ \(Codes\)/.+/src/.+\.py$ ]]; then
+              inst_dir=$(dirname "$(dirname "$file_unescaped")")
+              script_name=$(basename "$file_unescaped" .py)
+              test_file="$inst_dir/tests/test_${script_name}.py"
+ 
+              if [ -f "$test_file" ]; then
+                echo "✅ Found test for $file_unescaped -> $test_file"
+                tests_to_run+=("$test_file")
+              else
+                echo "⚠️ No test found for $file_unescaped"
+              fi
+            fi
+          done <<< "${{ steps.changed-files.outputs.all_changed_files }}"
+ 
+          if [ ${#tests_to_run[@]} -eq 0 ]; then
+            echo "No relevant tests found, skipping."
+            exit 0
+          fi
+ 
+          # Run all matched tests and generate HTML report
+          pytest "${tests_to_run[@]}" -v --disable-warnings --html=report.html --self-contained-html
+ 
+      - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-${{ env.PY }}
-          path: |
-            test-results/junit-${{ env.PY }}.xml
-            coverage-${{ env.PY }}.xml
-          retention-days: 7
-
+          name: pytest-html-report
+          path: report.html
