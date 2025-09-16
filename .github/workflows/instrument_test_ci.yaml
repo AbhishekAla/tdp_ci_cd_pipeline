@@ -7,7 +7,17 @@ on:
   pull_request:
     branches:
       - DEV
- 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write  # required for AWS OIDC
+
+# Avoid piling up duplicate runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -67,3 +77,68 @@ jobs:
         with:
           name: pytest-html-report
           path: report.html
+
+  deploy:
+    name: Build & Upload to S3
+    needs: [test]              # run only after tests succeed
+    if: ${{ needs.test.result == 'success' && github.ref_name == 'DEV' }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      S3_PREFIX: ${{ secrets.S3_PREFIX }}
+      ROLE_ARN: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            pyproject.toml
+            setup.cfg
+            setup.py
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build distribution (wheel/sdist)
+        run: |
+          rm -rf dist
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+            python -m build
+          else
+            echo "No packaging config found; zipping source as fallback."
+            mkdir -p dist
+            zip -r "dist/source-${GITHUB_SHA::7}.zip" src tests || true
+          fi
+          ls -lh dist
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload artifacts to S3
+        run: |
+          set -ruo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          # Build a clean prefix only if S3_PREFIX is set and non-empty
+          CLEAN_PREFIX=""
+          if [ -n "${S3_PREFIX:-}" ]; then
+            CLEAN_PREFIX="$S3_PREFIX%/}/"
+          fi
+
+          # Organize by branch/run for easy browsing and immutability
+          DEST="s3://${S3_BUCKET}/${CLEAN_PREFIX}${GITHUB_REF_NAME}/${GITHUB_RUN_NUMBER}-${SHORT_SHA}/"
+          echo "Uploading dist/* to ${DEST}"
+          aws s3 cp dist/ "$DEST" --recursive --only-show-errors 
+
