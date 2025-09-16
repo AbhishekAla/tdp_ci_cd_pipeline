@@ -44,7 +44,7 @@ jobs:
             file_unescaped=$(echo "$file" | sed 's/\\//g')
             echo "  $file_unescaped"
  
-            if [[ "$file_unescaped" =~ ^Implementation\ \(Codes\)/.+/src/.+\.py$ ]]; then
+            if [[ "$file_unescaped" =~ ^Implementation_Codes/Test_instrument/src/([^/]+)\.py$ ]]; then
               inst_dir=$(dirname "$(dirname "$file_unescaped")")
               script_name=$(basename "$file_unescaped" .py)
               test_file="$inst_dir/tests/test_${script_name}.py"
