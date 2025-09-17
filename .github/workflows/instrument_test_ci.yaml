@@ -100,8 +100,9 @@ jobs:
           pip install build
 
       - name: Build distribution (wheel/sdist or source zip)
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           rm -rf dist
           mkdir -p dist
 
@@ -109,12 +110,21 @@ jobs:
             python -m build
           else
             echo "No packaging config found; zipping source as fallback."
-            SHORT_SHA="${GITHUB_SHA::7}"
-            zip -r "dist/Test_instrument-${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}.zip" \ Implementation_Codes/Test_instrument \ -x '**/__pycache__/*' '.git/*'     
-          fi
+            SRC_DIR="Implementation_Codes/Test_instrument"
+            if [!-d"$SRC_DIR"]; then
+              echo "ERROR: '$SRC_DIR' not found. Printing tree to help debug:"
+              find . -maxdepth 3 -type d -print
+              exit 1
+            fi
 
-          echo "Built files:"
-          ls -lh dist
+            SHORT_SHA="${GITHUB_SHA::7}"
+            ARCHIVE="dist/Test_instrument-${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}.zip"
+            
+            zip -r "$ARCHIVE" "$SRC_DIR" -x '**/__pycache__/*' '.git/*'
+
+            echo "Built files:"
+            ls -lh dist
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
