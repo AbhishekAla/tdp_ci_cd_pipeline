@@ -133,17 +133,23 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload artifacts to S3
+        shell: bash
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
           set -ruo pipefail
           SHORT_SHA="${GITHUB_SHA::7}"
-          # Build a clean prefix only if S3_PREFIX is set and non-empty
-          CLEAN_PREFIX=""
-          if [ -n "${S3_PREFIX:-}" ]; then
-            CLEAN_PREFIX="$S3_PREFIX%/}/"
-          fi
+          
+          [[ -n "${S3_BUCKET:-}" ]] || { echo "S3_BUCKET is empty"; exit 1; }
+          [[ "${S3_BUCKET:-}" != */* ]] || { echo "S3_BUCKET must be a bucket name only (no /)"; exit 1; }
+          aws s3 ls "s3://${S3_BUCKET}" >/dev/null
+
+          #Ensure we acually have something to upload
+          ls -lh dist
+          test -n "$(ls -A dist)" || { echo "No files in dist/ to upload"; exit 1; }
 
           # Organize by branch/run for easy browsing and immutability
-          DEST="s3://${S3_BUCKET}/${CLEAN_PREFIX}${GITHUB_REF_NAME}/${GITHUB_RUN_NUMBER}-${SHORT_SHA}/"
-          echo "Uploading dist/* to ${DEST}"
+          DEST="s3://${S3_BUCKET}/${GITHUB_REF_NAME}/${GITHUB_RUN_NUMBER}-${SHORT_SHA}/"
+          echo "Uploading dist/* to: ${DEST}"
           aws s3 cp dist/ "$DEST" --recursive --only-show-errors 
 
