@@ -99,16 +99,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
-      - name: Build distribution (wheel/sdist)
+      - name: Build distribution (wheel/sdist or source zip)
         run: |
+          set -e
           rm -rf dist
+          mkdir -p dist
+
           if [ -f pyproject.toml ] || [ -f setup.py ]; then
             python -m build
           else
             echo "No packaging config found; zipping source as fallback."
-            mkdir -p dist
-            zip -r "dist/source-${GITHUB_SHA::7}.zip" src tests || true
+            SHORT_SHA="${GITHUB_SHA::7}
+            zip -r "dist/Test_instrument-${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}.zip" \ Implementation_Codes/Test_Instrument \ -x '**/__pycache__/*' '.git/*'     
           fi
+
+          echo "Built files:"
           ls -lh dist
 
       - name: Configure AWS credentials (OIDC)
