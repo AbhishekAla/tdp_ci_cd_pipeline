@@ -132,6 +132,11 @@ jobs:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Who am I & bucket access
+        run: |
+          aws sts get-caller-identity
+          aws s3api head-bucket --bucket "$S3_BUCKET"
+
       - name: Upload artifacts to S3
         shell: bash
         env:
