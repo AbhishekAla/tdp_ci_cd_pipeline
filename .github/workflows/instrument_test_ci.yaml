@@ -110,7 +110,7 @@ jobs:
           else
             echo "No packaging config found; zipping source as fallback."
             SHORT_SHA="${GITHUB_SHA::7}"
-            zip -r "dist/Test_instrument-${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}.zip" \ Implementation_Codes/Test_Instrument \ -x '**/__pycache__/*' '.git/*'     
+            zip -r "dist/Test_instrument-${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}.zip" \ Implementation_Codes/Test_instrument \ -x '**/__pycache__/*' '.git/*'     
           fi
 
           echo "Built files:"
