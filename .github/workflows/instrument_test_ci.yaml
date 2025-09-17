@@ -76,7 +76,7 @@ jobs:
   deploy:
     name: Build & Upload to S3
     needs: [test]              # run only after tests succeed
-    if: ${{ needs.test.result == 'success' && github.ref_name == 'DEV' }}
+    if: ${{ needs.test.result == 'success' && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
