@@ -1,0 +1,128 @@
+name: CI/CD • TDP
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "config/**"
+      - "update_pipeline.py"
+      - ".github/workflows/hithub-tetra-cicd.yaml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "config/**"
+      - "update_pipeline.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- CI: run unit tests and publish an HTML report ----------
+  test:
+    name: CI • Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-html
+
+      - name: Run unit tests (HTML report)
+        run: |
+          pytest -v --disable-warnings \
+            --html=report.html --self-contained-html
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-html-report
+          path: report.html
+          retention-days: 7
+
+  # ---------- CD: update pipeline JSON and POST to TDP ----------
+  deploy-tdp:
+    name: CD • Update TDP pipeline
+    needs: [test]
+    # Only deploy when CI succeeded
+    if: ${{ needs.test.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      # Provide at least one of these via repo secrets (Settings → Secrets → Actions)
+      # Prefer full URL in TDP_INGEST_URL, or provide TDP_PIPELINE_ID and we'll build the URL.
+      TDP_API_TOKEN:  ${{ secrets.TDP_API_TOKEN }}
+      TDP_INGEST_URL: ${{ secrets.TDP_INGEST_URL }}
+      TDP_PIPELINE_ID: ${{ secrets.TDP_PIPELINE_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Get changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            src/**/*.py
+            config/*.json
+            update_pipeline.py
+
+      - name: Decide which task scripts to update
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Collect python task scripts named like: src/pipeline_<name>-script_<step>.py
+          mapfile -t TASKS < <(printf "%s\n" "${{ steps.changed.outputs.all_changed_files }}" | grep -E '^src/pipeline_.*-script_.*\.py$' || true)
+
+          if [ ${#TASKS[@]} -eq 0 ]; then
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "No src/pipeline_*script_*.py changes detected; skipping deploy."
+            exit 0
+          fi
+
+          printf "%s\n" "${TASKS[@]}" > tasks.txt
+          echo "count=${#TASKS[@]}" >> "$GITHUB_OUTPUT"
+          echo "Changed task scripts:"
+          cat tasks.txt
+
+      - name: Update pipeline JSON & send to TDP
+        if: steps.plan.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Basic secret checks
+          if [ -z "${TDP_API_TOKEN:-}" ]; then
+            echo "TDP_API_TOKEN secret is required"; exit 1
+          fi
+
+          while IFS= read -r task_path; do
+            task_file="$(basename "$task_path")"
+
+            # Infer pipeline JSON file name:
+            #   pipeline_test1-script_step2.py  ->  pipeline_test1.json
+            pipeline_json="$(printf '%s\n' "$task_file" | sed -E 's/^([^ -]+)-.*$/\1.json/')" 
