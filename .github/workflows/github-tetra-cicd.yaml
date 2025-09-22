@@ -2,20 +2,19 @@ name: CI/CD • TDP
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, DEV ]
     paths:
-      - "src/**"
-      - "tests/**"
-      - "config/**"
-      - "update_pipeline.py"
-      - ".github/workflows/hithub-tetra-cicd.yaml"
+      - "Implementation_Codes/**/src/**"
+      - "Implementation_Codes/**/tests/**"
+      - "Implementation_Codes/**/config/**"
+      - ".github/workflows/ci-cd-tdp.yml"
   pull_request:
-    branches: [ main ]
+    branches: [ main, DEV ]
     paths:
-      - "src/**"
-      - "tests/**"
-      - "config/**"
-      - "update_pipeline.py"
+      - "Implementation_Codes/**/src/**"
+      - "Implementation_Codes/**/tests/**"
+      - "Implementation_Codes/**/config/**"
+      - ".github/workflows/ci-cd-tdp.yml"
 
 permissions:
   contents: read
@@ -25,7 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------- CI: run unit tests and publish an HTML report ----------
+  # ==============================
+  # CI — run unit tests + HTML report
+  # ==============================
   test:
     name: CI • Tests
     runs-on: ubuntu-latest
@@ -40,13 +41,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
+          cd Implementation_Codes/Test_instrument
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest pytest-html
 
-      - name: Run unit tests (HTML report)
+      - name: Run pytest (generate HTML report)
+        shell: bash
         run: |
+          set -euo pipefail
+          cd Implementation_Codes/Test_instrument
           pytest -v --disable-warnings \
             --html=report.html --self-contained-html
 
@@ -55,22 +62,28 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-html-report
-          path: report.html
+          path: Implementation_Codes/Test_instrument/report.html
           retention-days: 7
 
-  # ---------- CD: update pipeline JSON and POST to TDP ----------
+  # ==============================
+  # CD — update pipeline JSON & POST to TDP
+  # ==============================
   deploy-tdp:
     name: CD • Update TDP pipeline
     needs: [test]
-    # Only deploy when CI succeeded
     if: ${{ needs.test.result == 'success' }}
     runs-on: ubuntu-latest
+
+    # Required repo secrets:
+    #   - TDP_API_TOKEN  (JWT/API token)
+    #   - EITHER TDP_INGEST_URL (full URL) OR TDP_PIPELINE_ID (UUID)
+    # Optional:
+    #   - TDP_ORG_SLUG (defaults to gilead-dev)
     env:
-      # Provide at least one of these via repo secrets (Settings → Secrets → Actions)
-      # Prefer full URL in TDP_INGEST_URL, or provide TDP_PIPELINE_ID and we'll build the URL.
       TDP_API_TOKEN:  ${{ secrets.TDP_API_TOKEN }}
       TDP_INGEST_URL: ${{ secrets.TDP_INGEST_URL }}
       TDP_PIPELINE_ID: ${{ secrets.TDP_PIPELINE_ID }}
+      TDP_ORG_SLUG:   ${{ secrets.TDP_ORG_SLUG || 'gilead-dev' }}
 
     steps:
       - name: Checkout
@@ -86,43 +99,86 @@ jobs:
         uses: tj-actions/changed-files@v45
         with:
           files: |
-            src/**/*.py
-            config/*.json
-            update_pipeline.py
+            Implementation_Codes/**/src/**/*.py
+            Implementation_Codes/**/config/*.json
+            Implementation_Codes/**/src/update_pipeline.py
 
-      - name: Decide which task scripts to update
+      - name: Plan changed step-scripts
         id: plan
         shell: bash
         run: |
           set -euo pipefail
-          # Collect python task scripts named like: src/pipeline_<name>-script_<step>.py
-          mapfile -t TASKS < <(printf "%s\n" "${{ steps.changed.outputs.all_changed_files }}" | grep -E '^src/pipeline_.*-script_.*\.py$' || true)
+          printf '%s\n' "${{ steps.changed.outputs.all_changed_files }}" > all.txt
+          echo "Changed files:" && cat all.txt || true
 
-          if [ ${#TASKS[@]} -eq 0 ]; then
+          # Match files like:
+          # Implementation_Codes/<instrument>/src/pipeline_<name>-script_<step>.py
+          grep -E '^Implementation_Codes/[^/]+/src/pipeline_.*-script_.*\.py$' all.txt > tasks.txt || true
+
+          if ! [ -s tasks.txt ]; then
             echo "count=0" >> "$GITHUB_OUTPUT"
-            echo "No src/pipeline_*script_*.py changes detected; skipping deploy."
+            echo "No step-script changes detected; skipping TDP deploy."
             exit 0
           fi
 
-          printf "%s\n" "${TASKS[@]}" > tasks.txt
-          echo "count=${#TASKS[@]}" >> "$GITHUB_OUTPUT"
-          echo "Changed task scripts:"
-          cat tasks.txt
+          echo "count=$(wc -l < tasks.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "Step-scripts to deploy:" && cat tasks.txt
 
       - name: Update pipeline JSON & send to TDP
         if: steps.plan.outputs.count != '0'
         shell: bash
         run: |
           set -euo pipefail
+          [ -n "${TDP_API_TOKEN:-}" ] || { echo "TDP_API_TOKEN secret is required"; exit 1; }
 
-          # Basic secret checks
-          if [ -z "${TDP_API_TOKEN:-}" ]; then
-            echo "TDP_API_TOKEN secret is required"; exit 1
-          fi
+          while IFS= read -r path; do
+            # Example: Implementation_Codes/Test_instrument/src/pipeline_test1-script_step2.py
+            inst_root="${path%%/src/*}"        # -> Implementation_Codes/Test_instrument
+            task_file="${path##*/}"            # -> pipeline_test1-script_step2.py
 
-          while IFS= read -r task_path; do
-            task_file="$(basename "$task_path")"
+            # pipeline_test1-script_step2.py -> pipeline_test1.json
+            pipeline_json="$(printf '%s\n' "$task_file" | sed -E 's/^([^ -]+)-.*$/\1.json/')"
 
-            # Infer pipeline JSON file name:
-            #   pipeline_test1-script_step2.py  ->  pipeline_test1.json
-            pipeline_json="$(printf '%s\n' "$task_file" | sed -E 's/^([^ -]+)-.*$/\1.json/')" 
+            echo "::group::Instrument: $inst_root | Task: $task_file | JSON: $pipeline_json"
+
+            # Sanity checks
+            [ -f "$inst_root/config/$pipeline_json" ] || { echo "Missing $inst_root/config/$pipeline_json"; exit 1; }
+            [ -f "$inst_root/src/$task_file" ]        || { echo "Missing $inst_root/src/$task_file"; exit 1; }
+            [ -f "$inst_root/src/update_pipeline.py" ]|| { echo "Missing $inst_root/src/update_pipeline.py"; exit 1; }
+
+            # Run updater FROM the instrument root so its 'config'/'src' paths resolve
+            (
+              cd "$inst_root"
+              python src/update_pipeline.py "$pipeline_json" "$task_file"
+              [ -s config/pipeline_out.json ] || { echo "update_pipeline did not produce config/pipeline_out.json"; exit 1; }
+              echo "Updated JSON preview (first 1KB):"
+              head -c 1024 config/pipeline_out.json || true
+            )
+
+            # Build endpoint URL
+            if [ -n "${TDP_INGEST_URL:-}" ]; then
+              URL="${TDP_INGEST_URL%/}"
+            else
+              [ -n "${TDP_PIPELINE_ID:-}" ] || { echo "Provide TDP_INGEST_URL or TDP_PIPELINE_ID secret"; exit 1; }
+              URL="https://api.tetrascience.com/v1/pipeline/update/${TDP_PIPELINE_ID}"
+            fi
+
+            echo "POST -> $URL"
+            http_code=$(curl -sS -o resp.json -w "%{http_code}" -X POST "$URL" \
+              -H "Authorization: Bearer $TDP_API_TOKEN" \
+              -H "x-org-slug: ${TDP_ORG_SLUG}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$inst_root/config/pipeline_out.json")
+
+            echo "TDP response: $http_code"
+            head -c 1024 resp.json || true
+            if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+              echo "::error::TDP update failed with HTTP $http_code"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done < tasks.txt
+
+      - name: Nothing to deploy
+        if: steps.plan.outputs.count == '0'
+        run: echo "No applicable step-script changes; TDP deploy skipped." 

@@ -10,8 +10,8 @@ import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 pipeline_data = ""
-pipeline_folder = "config"
-source_folder = "src"
+pipeline_folder = "Implementation_Codes/Test_instrument/config"
+source_folder = "Implementation_Codes/Test_instrument/src"
 pipeline_output_file = "pipeline_out.json"
 
 def update_pipeline(pipeline_json_file: str, taskscript_file: str) -> Tuple[str, str, str]:
